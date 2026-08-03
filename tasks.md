@@ -19,31 +19,31 @@ Rules for the agent:
 
 ## Phase 1 — Core Model (F1, F2)
 
-- [ ] **T1.1 — `Config` dataclass** (arch §2.1)
+- [x] **T1.1 — `Config` dataclass** (arch §2.1)
   All fields with defaults; `__post_init__` derives `service_time_s = 3600 / cell_rate_cases_per_hr`. Units commented on every time/rate field.
   **Verify:** instantiate `Config()` and print it; `service_time_s ≈ 2.667`.
 
-- [ ] **T1.2 — `Case` dataclass** (arch §2.2)
+- [x] **T1.2 — `Case` dataclass** (arch §2.2)
   `seq_id` + four timestamp fields (default `None`).
   **Verify:** create a `Case(seq_id=0, created_t=0.0)`; fields accessible.
 
-- [ ] **T1.3 — Interarrival sampler**
+- [x] **T1.3 — Interarrival sampler**
   Function `make_interarrival_sampler(config, rng) -> Callable[[], float]` supporting `"exponential"` and `"lognormal"` (lognormal parameterized from mean + CV). Uses the passed `numpy` Generator only (arch §5.2).
   **Verify:** draw 10,000 samples for CV=0.5 and CV=1.5; empirical mean ≈ `mean_interarrival_s` and empirical CV ≈ configured CV (within ~5%).
 
-- [ ] **T1.4 — `Metrics` class** (arch §2.6)
+- [x] **T1.4 — `Metrics` class** (arch §2.6)
   Lists for completed cases, blocked intervals `(start, end, cause)`, buffer level trace; `rejected_count`. Add `summary()` stub returning an empty dict for now.
   **Verify:** instantiate; append to each list; no errors.
 
-- [ ] **T1.5 — `CaseGenerator` process** (arch §2.3)
+- [x] **T1.5 — `CaseGenerator` process** (arch §2.3)
   SimPy process creating cases with increasing `seq_id`, sampled gaps, delivering into a `simpy.Store` (FIFO buffer, capacity from config). Full buffer → increment `rejected_count`, record event, drop case.
   **Verify:** run generator alone for 1 simulated hour; case count ≈ `3600 / mean_interarrival_s` (±10%).
 
-- [ ] **T1.6 — `OutboundCell` process, FIFO only** (arch §2.5)
+- [x] **T1.6 — `OutboundCell` process, FIFO only** (arch §2.5)
   Loop: `store.get()` → record wait/blocked-empty interval if idle → deterministic `timeout(service_time_s)` → record completion into `Metrics`.
   **Verify:** a full run completes without exceptions.
 
-- [ ] **T1.7 — `run_once(config) -> dict`** (arch §5.1)
+- [x] **T1.7 — `run_once(config) -> dict`** (arch §5.1)
   Wire env + rng + generator + buffer + cell + metrics; run for `sim_duration_s`; return `metrics.summary()` (still stub).
   **Verify:** `run_once(Config())` returns without error; identical results object across two calls with the same seed.
 
