@@ -218,12 +218,13 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Git Commands
-./git_commands.md
+git_commands.md
 
 # Claude files
 
-./claude/
+claude/executions/*
 
 # Outbound Cell Simulator generated output
 outbound-cell-sim/results/*
 !outbound-cell-sim/results/.gitkeep
+outbound-cell-sim/.venv/*
