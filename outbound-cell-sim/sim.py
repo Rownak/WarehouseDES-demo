@@ -1,5 +1,6 @@
 """Outbound Cell Throughput Simulator — core model."""
 
+import argparse
 import math
 from dataclasses import dataclass, field
 from typing import Callable, Optional
@@ -58,9 +59,58 @@ class Metrics:
         self.blocked_intervals: list[tuple[float, float, str]] = []  # (start, end, cause)
         self.buffer_level_trace: list[tuple[float, int]] = []  # (t, level), appended on insert/remove
         self.rejected_count: int = 0
+        self.generated_count: int = 0
 
-    def summary(self) -> dict:
-        return {}
+    def summary(self, config: "Config") -> dict:
+        """Post-warm-up statistics. Excludes anything before config.warmup_s."""
+        warmup_s = config.warmup_s
+        observed_s = config.sim_duration_s - warmup_s
+
+        completed = [c for c in self.completed if c.service_end_t >= warmup_s]
+        n_completed = len(completed)
+
+        throughput_cases_per_hr = n_completed / observed_s * 3600 if observed_s > 0 else 0.0
+
+        busy_s = sum(
+            min(c.service_end_t, config.sim_duration_s) - max(c.service_start_t, warmup_s)
+            for c in completed
+        )
+        utilization = busy_s / observed_s if observed_s > 0 else 0.0
+
+        wait_times_s = [c.service_start_t - c.arrived_t for c in completed]
+        mean_wait_s = float(np.mean(wait_times_s)) if wait_times_s else 0.0
+        p95_wait_s = float(np.percentile(wait_times_s, 95)) if wait_times_s else 0.0
+
+        # Clip blocked intervals to the post-warm-up observation window and sum by cause.
+        starved_s_by_cause: dict[str, float] = {}
+        for start, end, cause in self.blocked_intervals:
+            clipped_start = max(start, warmup_s)
+            clipped_end = min(end, config.sim_duration_s)
+            if clipped_end > clipped_start:
+                starved_s_by_cause[cause] = starved_s_by_cause.get(cause, 0.0) + (clipped_end - clipped_start)
+        starved_pct_by_cause = {
+            f"starved_pct_{cause}": (duration / observed_s * 100 if observed_s > 0 else 0.0)
+            for cause, duration in starved_s_by_cause.items()
+        }
+
+        post_warmup_levels = [level for t, level in self.buffer_level_trace if t >= warmup_s]
+        mean_buffer_level = float(np.mean(post_warmup_levels)) if post_warmup_levels else 0.0
+
+        in_system_count = self.generated_count - len(self.completed) - self.rejected_count
+
+        return {
+            "throughput_cases_per_hr": throughput_cases_per_hr,
+            "nominal_cases_per_hr": config.cell_rate_cases_per_hr,
+            "utilization": utilization,
+            "mean_wait_s": mean_wait_s,
+            "p95_wait_s": p95_wait_s,
+            "mean_buffer_level": mean_buffer_level,
+            "rejected_count": self.rejected_count,
+            "generated_count": self.generated_count,
+            "completed_count": len(self.completed),
+            "in_system_count": in_system_count,
+            **starved_pct_by_cause,
+        }
 
 
 def case_generator(env: simpy.Environment, config: Config, rng: np.random.Generator,
@@ -72,6 +122,7 @@ def case_generator(env: simpy.Environment, config: Config, rng: np.random.Genera
         yield env.timeout(sample_gap())
         case = Case(seq_id=seq_id, created_t=env.now)
         seq_id += 1
+        metrics.generated_count += 1
         if len(buffer.items) >= config.buffer_capacity:
             metrics.rejected_count += 1
             continue
@@ -107,9 +158,48 @@ def run_once(config: Config) -> dict:
     env.process(outbound_cell(env, config, buffer, metrics))
 
     env.run(until=config.sim_duration_s)
-    return metrics.summary()
+    return metrics.summary(config)
+
+
+def print_summary(summary: dict) -> None:
+    """One-screen labeled console report, units shown."""
+    starved_keys = sorted(k for k in summary if k.startswith("starved_pct_"))
+
+    print("=== Outbound Cell Simulation Summary (post warm-up) ===")
+    print(f"Throughput:        {summary['throughput_cases_per_hr']:.1f} cases/hr"
+          f"  (nominal {summary['nominal_cases_per_hr']:.0f} cases/hr)")
+    print(f"Utilization:       {summary['utilization'] * 100:.1f} %")
+    print(f"Mean wait:         {summary['mean_wait_s']:.2f} s")
+    print(f"P95 wait:          {summary['p95_wait_s']:.2f} s")
+    print(f"Mean buffer level: {summary['mean_buffer_level']:.2f} cases")
+    print("Starved time:")
+    if starved_keys:
+        for k in starved_keys:
+            cause = k[len("starved_pct_"):]
+            print(f"  - {cause:<20} {summary[k]:.2f} %")
+    else:
+        print("  (none)")
+    print(f"Reject count:      {summary['rejected_count']}")
+    print(f"Generated:         {summary['generated_count']}")
+    print(f"Completed:         {summary['completed_count']}")
+    print(f"In-system (end):   {summary['in_system_count']}")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Outbound Cell Throughput Simulator")
+    parser.add_argument("--policy", choices=["fifo", "sequence"], default=Config.policy,
+                         help="service policy (default: %(default)s)")
+    parser.add_argument("--cv", type=float, default=Config.arrival_cv,
+                         help="arrival coefficient of variation (default: %(default)s)")
+    parser.add_argument("--seed", type=int, default=Config.seed,
+                         help="RNG seed (default: %(default)s)")
+    parser.add_argument("--duration", type=float, default=Config.sim_duration_s,
+                         help="simulated duration, s (default: %(default)s)")
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
-    cfg = Config()
-    print(cfg)
+    args = parse_args()
+    cfg = Config(policy=args.policy, arrival_cv=args.cv, seed=args.seed, sim_duration_s=args.duration)
+    result = run_once(cfg)
+    print_summary(result)
