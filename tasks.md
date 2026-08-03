@@ -51,19 +51,19 @@ Rules for the agent:
 
 ## Phase 2 — Metrics & CLI (F4, part of F1)
 
-- [ ] **T2.1 — Implement `summary()`** (arch §2.6)
+- [x] **T2.1 — Implement `summary()`** (arch §2.6)
   Post-warm-up: throughput (cases/hr), utilization, mean & p95 wait (s), starved % by cause, mean buffer level, reject count, generated/completed/in-system counts. Flat dict of floats/ints.
   **Verify:** conservation holds: generated = completed + rejected + in-system (arch §6).
 
-- [ ] **T2.2 — Console report**
+- [x] **T2.2 — Console report**
   `print_summary(summary: dict)` — one-screen, labeled, units shown, nominal 1,350 printed next to effective throughput.
   **Verify:** output is readable and complete for a default run.
 
-- [ ] **T2.3 — CLI flags** (features W2)
+- [x] **T2.3 — CLI flags** (features W2)
   `argparse` in `sim.py __main__`: `--policy`, `--cv`, `--seed`, `--duration` mapping straight onto `Config`.
   **Verify:** `python sim.py --cv 0.5 --seed 7` runs and reflects the flags in output.
 
-- [ ] **T2.4 — Sanity check: deterministic arrivals** (arch §6)
+- [x] **T2.4 — Sanity check: deterministic arrivals** (arch §6)
   Temporary check or pytest: CV→0 (use tiny CV like 0.01), matched rate, FIFO → utilization ≥ 0.99, throughput ≈ 1,350 (±1%), near-zero mean wait.
   **Verify:** check passes. If not, fix Phase 1 before continuing.
 
