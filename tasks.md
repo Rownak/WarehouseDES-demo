@@ -11,7 +11,7 @@ Rules for the agent:
 
 ## Phase 0 — Project Setup
 
-- [ ] **T0.1 — Scaffold the project**
+- [x] **T0.1 — Scaffold the project**
   Create `outbound-cell-sim/` with empty `sim.py`, `experiment.py`, `requirements.txt` (`simpy`, `numpy`, `pandas`, `matplotlib`), `results/` directory, and a `.gitignore` ignoring `results/`.
   **Verify:** `pip install -r requirements.txt` succeeds; `python sim.py` runs (does nothing).
 
