@@ -122,9 +122,12 @@ Rules for the agent:
 
 ## Phase 6 — Wrap-Up
 
-- [ ] **T6.1 — Final validation pass**
+- [x] **T6.1 — Final validation pass**
   Re-run all arch §6 checks: deterministic sanity, M/D/1 (if built), sequence dominance, conservation, and seed reproducibility (same command twice → identical output).
-- [ ] **T6.2 — Code hygiene**
+  **Verify:** all pass. Deterministic sanity (cv=0.01, default lognormal, FIFO): utilization=0.9996, throughput=1349.71 (±0.03%), mean_wait=0.30s. M/D/1 (exponential/FIFO, moderate utilization ~0.85–0.86, no rejects): agreement 4–23% across seeds 1–5, converging as ρ moves away from 1, consistent with T5.1's documented ρ-sensitivity; default-config divergence (24.30s sim vs 45.65s analytic at ρ=0.97) reconfirmed as expected, not a bug. Sequence dominance (CV=1.0, seeds 1–3): throughput and wait ordering hold, `waiting_for_sequence` > 0 in all three — numbers match tasks.md T3.3 exactly. Conservation (default config, both policies): generated = completed + rejected + in_system exactly, both FIFO and sequence. Seed reproducibility: `python sim.py --seed 42` run twice → byte-identical output.
+- [x] **T6.2 — Code hygiene**
   Confirm: no global RNG use, no polling loops, units commented, no features from the Non-Features list, `sim.py` core ≈ 150 lines or less.
-- [ ] **T6.3 — Demo dry-run**
+  **Verify:** no `import random`/global `np.random` calls anywhere (grep clean); no `env.timeout(0)`-style polling (grep clean, matches architecture §5.3's per-seq-id event design); every `Config` time/rate field has an inline units comment; no Non-Features-list content (multi-cell, routing, GUI, config files, logging frameworks, databases, abstract policy classes, parallel replication) present in either file. `sim.py` is 327 lines total; the core model (`Config` → `run_once`) is ~196 lines of code (excluding blank/comment lines) against the ~150-line architecture §1 guideline — over budget, attributable to the two documented Phase 3 structural fixes (`SequenceBuffer`, `shuffle_window`/`make_seq_id_sampler`) plus per-field unit comments; `print_summary`/`parse_args`/CLI wiring (~46 lines) are reporting, not core model. Accepted as-is: the overage is small, explained, and required for the sequence-policy divergence to be reachable at all (§3.2's note).
+- [x] **T6.3 — Demo dry-run**
   Execute workflows W1, W2, W3 from `features.md` start to finish and confirm the headline result is visible in `comparison.png`.
+  **Verify:** W1 (`python sim.py`) completes in 0.27s, well under the 10s target. W2 (`--policy fifo/sequence --cv 1.0 --seed 42`) shows a clear side-by-side gap: FIFO 1320.3 cases/hr / 27.84s wait vs. sequence 1248.6 cases/hr / 43.90s wait, with `waiting_for_sequence` at 7.52% (absent from FIFO's starved breakdown). W3 (`python experiment.py`) completes in ~8s (limit: under a minute); `results/comparison.png` visually confirmed — sequence (orange) sits below FIFO (blue) in throughput at every CV, gap widens from ~40 cases/hr at CV=0.25 to ~92 cases/hr at CV=2.0; `results/buffer_trace.png` also regenerated and visually sane (cycles 0–20 with bursts/drains).
