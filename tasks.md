@@ -93,17 +93,17 @@ Rules for the agent:
 
 ## Phase 4 — Experiment & Chart (F5)
 
-- [ ] **T4.1 — Sweep runner** (arch §2.7)
+- [x] **T4.1 — Sweep runner** (arch §2.7)
   In `experiment.py`: iterate CV ∈ {0.25, 0.5, 1.0, 1.5, 2.0} × policy ∈ {fifo, sequence} × 5 seeds; call `run_once`; collect into a pandas DataFrame; print grouped means.
-  **Verify:** `python experiment.py` completes in under a minute; table prints.
+  **Verify:** `python experiment.py` completes in under a minute; table prints. Passed — full sweep (50 runs) completes in ~7s; grouped table (throughput, utilization, mean/p95 wait, rejects) prints per policy × CV.
 
-- [ ] **T4.2 — Comparison figure**
+- [x] **T4.2 — Comparison figure**
   Two-panel matplotlib figure per features F5 (throughput vs CV with 1,350 dashed line; mean wait vs CV), mean over seeds per point, saved to `results/comparison.png`.
-  **Verify:** PNG exists; sequence line sits below FIFO on panel A and gap widens with CV.
+  **Verify:** PNG exists; sequence line sits below FIFO on panel A and gap widens with CV. Passed — sequence throughput stays below FIFO at every CV (1306→1163 vs 1345→1254 cases/hr) and the gap widens from ~40 to ~90 cases/hr as CV rises 0.25→2.0.
 
-- [ ] **T4.3 — README snippet**
+- [x] **T4.3 — README snippet**
   Add a short "How to run" section (W1–W3 commands) to the top of `experiment.py` docstring or a minimal `README.md`.
-  **Verify:** commands in the snippet work as written.
+  **Verify:** commands in the snippet work as written. Passed — "How to run" section added to `experiment.py`'s module docstring (pip install, `python sim.py`, policy comparison, `python experiment.py`); all commands verified to run.
 
 ---
 
