@@ -26,6 +26,7 @@ Central parameter object passed to everything. Fields:
 | `arrival_cv` | float | 1.0 | Coefficient of variation of inter-arrival times |
 | `arrival_dist` | str | `"lognormal"` | `"exponential"` or `"lognormal"` |
 | `buffer_capacity` | int | 20 | Max cases staged in front of the cell |
+| `shuffle_window` | int | 5 | Max look-ahead used to scramble `seq_id` (pallet-build order) relative to arrival order; `1` = strict order, no scrambling |
 | `policy` | str | `"fifo"` | `"fifo"` or `"sequence"` |
 | `sim_duration_s` | float | 4 * 3600 | Simulated time (4 hours default) |
 | `warmup_s` | float | 1800 | Metrics before this time are discarded |
@@ -34,18 +35,19 @@ Central parameter object passed to everything. Fields:
 Derived values are computed in `__post_init__`. Never hardcode numbers elsewhere.
 
 ### 2.2 `Case` (dataclass)
-The entity flowing through the system. Fields: `seq_id: int` (pallet sequence order, assigned at creation in increasing order), `created_t: float`, `arrived_t: float`, `service_start_t: float`, `service_end_t: float`. Timestamps are filled in as events occur; wait time and flow time are computed from them, not stored.
+The entity flowing through the system. Fields: `seq_id: int` (required pallet-build order; may differ from arrival order — see `shuffle_window` below), `created_t: float`, `arrived_t: float`, `service_start_t: float`, `service_end_t: float`. Timestamps are filled in as events occur; wait time and flow time are computed from them, not stored.
 
 ### 2.3 `CaseGenerator` (SimPy process)
-- Creates cases with `seq_id = 0, 1, 2, ...` in order.
-- For each case, samples a travel delay from the configured inter-arrival distribution, then delivers the case to the buffer.
-- Model arrivals as a renewal process: sample the gap between arrivals directly. (Do not model pick + route separately in v1 — that is a future enhancement.)
-- If the buffer is full on arrival, record a `buffer_reject` event and drop the case. Dropping is a simplification; count it so the result is visible.
+- Samples a travel delay from the configured inter-arrival distribution, then delivers each case to the buffer. Model arrivals as a renewal process: sample the gap between arrivals directly. (Do not model pick + route as a separate timed process in v1 — that is a future enhancement.)
+- `seq_id` (the pallet-build order the cell must serve in) is assigned separately from arrival timing, via a sliding look-ahead window of size `shuffle_window`: maintain a pool of the next `shuffle_window` not-yet-assigned ids, shuffle the pool with the run's `rng`, and pop one id per case created. Every id `0..N-1` is used exactly once; no id leads or lags its arrival position by more than `shuffle_window - 1`. `shuffle_window = 1` disables scrambling (seq_id == arrival order).
+  - **Why this exists:** with `seq_id` strictly equal to arrival order, FIFO and sequence policy are mathematically identical (FIFO always serves the lowest seq_id present anyway), and `waiting_for_sequence` starved time can never occur — there is no arrival-order/build-order divergence for either policy to react to. `shuffle_window` is the minimal mechanism that introduces that divergence (modeling a picker working a local zone, not a strict single-file line) without building a full timed pick+route process.
+- If the buffer is full on arrival, record a `buffer_reject` event and drop the case; in sequence mode, also mark that `seq_id` as skipped (§2.4) so the cell doesn't block on it forever. Dropping is a simplification; count it so the result is visible.
 
 ### 2.4 `Buffer`
 - For **FIFO**: a `simpy.Store` with `capacity = buffer_capacity`.
-- For **sequence** policy: a plain dict `{seq_id: Case}` guarded by capacity checks, because the cell must retrieve a *specific* case, not the oldest. Do not force `simpy.Store` here — retrieval by key is the natural structure.
-- Expose one interface used by the cell: `get_next(expected_seq_id) -> Case | None` (sequence mode) and `get_any() -> Case` (FIFO mode, blocking via Store).
+- For **sequence** policy: `SequenceBuffer`, a plain dict `{seq_id: Case}` guarded by capacity checks, because the cell must retrieve a *specific* case, not the oldest. Do not force `simpy.Store` here — retrieval by key is the natural structure.
+- Expose the interface used by the cell: `get_next(expected_seq_id)` (sequence mode, event-based, no polling — see §2.5) and `store.get()` (FIFO mode, blocking via Store).
+- `SequenceBuffer.skip(seq_id)` marks an id as dropped (rejected on arrival, buffer was full) and resolves any pending wait on it, so `get_next` returns `None` instead of blocking forever on an id that will never arrive. The cell treats a `None` result as "advance past the gap, nothing to serve."
 
 ### 2.5 `OutboundCell` (SimPy process)
 The single server. Loop:
@@ -142,5 +144,5 @@ outbound-cell-sim/
 
 - **Deterministic sanity:** `arrival_cv → 0` at matched rate, FIFO → utilization ≈ 1.0, throughput ≈ 1350, near-zero waits.
 - **M/D/1 comparison:** exponential arrivals (CV=1), FIFO → mean wait should be close to the analytic M/D/1 formula `Wq = ρ·s / (2(1−ρ))`. Report both in the console.
-- **Sequence dominance:** for any CV > 0, sequence-policy throughput ≤ FIFO throughput, and `waiting_for_sequence` starved time > 0. If not, there is a bug.
+- **Sequence dominance:** with default `shuffle_window` (> 1), for any CV > 0, sequence-policy throughput ≤ FIFO throughput, and `waiting_for_sequence` starved time > 0. If not, there is a bug. (At `shuffle_window = 1`, seq_id == arrival order, so FIFO and sequence are mathematically identical and this check does not apply — that is expected, not a bug.)
 - **Conservation:** cases generated = completed + rejected + in-system at end.
