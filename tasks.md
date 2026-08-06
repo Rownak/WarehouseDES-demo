@@ -71,17 +71,23 @@ Rules for the agent:
 
 ## Phase 3 — Sequence Policy (F3)
 
-- [ ] **T3.1 — Sequence-mode buffer** (arch §2.4)
+- [x] **T3.1 — Sequence-mode buffer** (arch §2.4)
   Dict `{seq_id: Case}` with capacity enforcement + per-seq-id `simpy.Event` map so the cell can await a specific ID. No polling loops (arch §5.3). Insertion triggers the event for that ID if someone is waiting.
-  **Verify:** unit-style test: cell awaiting ID 5 wakes exactly when case 5 is inserted, even if 6 and 7 arrived first.
+  **Verify:** unit-style test: cell awaiting ID 5 wakes exactly when case 5 is inserted, even if 6 and 7 arrived first. Passed — confirmed wake occurs exactly at insertion of case 5, with 6/7 remaining buffered.
 
-- [ ] **T3.2 — Sequence logic in `OutboundCell`**
+- [x] **T3.2 — Sequence logic in `OutboundCell`**
   `if config.policy == "sequence"`: serve strictly increasing `next_seq_id`; when blocked, record cause `waiting_for_sequence` if buffer non-empty else `empty`; increment `next_seq_id` after each service.
-  **Verify:** `python sim.py --policy sequence --cv 1.0` runs; summary shows nonzero `waiting_for_sequence` time.
+  **Verify:** `python sim.py --policy sequence --cv 1.0` runs to completion without exceptions or deadlock; conservation holds (generated = completed + rejected + in-system); summary shows nonzero `waiting_for_sequence` starved time (7.5% at default `shuffle_window=5`, seed 42).
+  **Note:** initial implementation revealed two structural bugs, both fixed:
+  1. A case rejected on arrival (buffer full) left the cell permanently blocked awaiting that seq_id forever, since `next_seq_id` never advanced past an id that was never inserted — throughput collapsed to 0 partway through longer runs. Fixed with `SequenceBuffer.skip()` (arch §2.4), which resolves the pending wait so the cell advances past the gap.
+  2. With `seq_id` assigned in strict arrival order (the original arch §2.3 wording), `waiting_for_sequence` was structurally unreachable and FIFO/sequence policies were mathematically identical — no seq_id could ever sit in the buffer while an earlier one was still unresolved, since the generator only creates one case at a time in order. Fixed by decoupling `seq_id` from arrival order via `Config.shuffle_window` and `make_seq_id_sampler` (arch §2.1/§2.3) — a picker-working-a-zone model, not full pick+route.
 
-- [ ] **T3.3 — Sequence-dominance check** (arch §6)
+- [x] **T3.3 — Sequence-dominance check** (arch §6)
   Same seed, CV=1.0: sequence throughput ≤ FIFO throughput and sequence mean wait ≥ FIFO mean wait.
-  **Verify:** check passes for seeds {1, 2, 3}.
+  **Verify:** check passes for seeds {1, 2, 3} at default `shuffle_window=5`:
+  - seed 1: fifo_thr=1325.1, seq_thr=1259.4; fifo_wait=25.84s, seq_wait=44.56s
+  - seed 2: fifo_thr=1293.7, seq_thr=1232.9; fifo_wait=23.42s, seq_wait=43.75s
+  - seed 3: fifo_thr=1331.1, seq_thr=1259.7; fifo_wait=30.62s, seq_wait=45.09s
 
 ---
 

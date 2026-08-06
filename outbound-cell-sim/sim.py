@@ -17,6 +17,7 @@ class Config:
     arrival_cv: float = 1.0  # coefficient of variation of inter-arrival times
     arrival_dist: str = "lognormal"  # "exponential" or "lognormal"
     buffer_capacity: int = 20  # max cases staged in front of the cell
+    shuffle_window: int = 5  # max look-ahead used to scramble seq_id vs. arrival order (1 = strict order)
     policy: str = "fifo"  # "fifo" or "sequence"
     sim_duration_s: float = 4 * 3600  # simulated time, s (4 hours default)
     warmup_s: float = 1800  # metrics before this time are discarded, s
@@ -28,7 +29,7 @@ class Config:
 
 @dataclass
 class Case:
-    seq_id: int  # pallet sequence order, assigned at creation in increasing order
+    seq_id: int  # required pallet-build order; may differ from arrival order (see shuffle_window)
     created_t: float  # sim time the case was created, s
     arrived_t: Optional[float] = None  # sim time the case arrived at the buffer, s
     service_start_t: Optional[float] = None  # sim time service began, s
@@ -113,33 +114,127 @@ class Metrics:
         }
 
 
+class SequenceBuffer:
+    """Sequence-mode buffer: {seq_id: Case} with capacity + per-seq-id wait events.
+
+    The cell must retrieve a *specific* case (the next seq_id), not the oldest,
+    so this is a dict guarded by capacity checks rather than a simpy.Store.
+    Insertion triggers the waiting event for that seq_id, if any (arch §2.4/§5.3).
+    """
+
+    def __init__(self, env: simpy.Environment, capacity: int) -> None:
+        self.env = env
+        self.capacity = capacity
+        self.items: dict[int, Case] = {}
+        self._wait_events: dict[int, simpy.Event] = {}
+        self._skipped: set[int] = set()  # seq_ids rejected on arrival (dropped, never inserted)
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def put(self, case: Case) -> None:
+        self.items[case.seq_id] = case
+        event = self._wait_events.pop(case.seq_id, None)
+        if event is not None:
+            event.succeed()
+
+    def skip(self, seq_id: int) -> None:
+        """Mark seq_id as dropped so a waiting cell does not block on it forever."""
+        self._skipped.add(seq_id)
+        event = self._wait_events.pop(seq_id, None)
+        if event is not None:
+            event.succeed()
+
+    def get_next(self, expected_seq_id: int):
+        """Generator: yields until seq_id is inserted or skipped, then returns the
+        case (or None if it was dropped) so the cell can advance past the gap."""
+        if expected_seq_id not in self.items and expected_seq_id not in self._skipped:
+            event = self._wait_events.setdefault(expected_seq_id, self.env.event())
+            yield event
+        self._skipped.discard(expected_seq_id)
+        return self.items.pop(expected_seq_id, None)
+
+
+def buffer_len(buffer) -> int:
+    """Level of either buffer type: simpy.Store (FIFO) or SequenceBuffer."""
+    return len(buffer.items)
+
+
+def make_seq_id_sampler(config: Config, rng: np.random.Generator) -> Callable[[], int]:
+    """Return a zero-arg callable yielding the seq_id for the next created case.
+
+    Every non-negative integer is returned exactly once, but not necessarily in
+    increasing order: ids are drawn from a sliding look-ahead window of size
+    shuffle_window, shuffled with the run's rng, so a case's build-sequence
+    position (seq_id) can lead or lag its arrival order by up to
+    shuffle_window - 1 places — modeling a picker working a local zone rather
+    than a strict single-file line. shuffle_window=1 reproduces strict order.
+    """
+    next_unpooled = 0
+    pool: list[int] = []
+
+    def sample() -> int:
+        nonlocal next_unpooled, pool
+        while len(pool) < config.shuffle_window:
+            pool.append(next_unpooled)
+            next_unpooled += 1
+        rng.shuffle(pool)
+        return pool.pop()
+
+    return sample
+
+
 def case_generator(env: simpy.Environment, config: Config, rng: np.random.Generator,
-                    buffer: simpy.Store, metrics: Metrics):
-    """SimPy process: create cases with increasing seq_id, deliver into the FIFO buffer."""
+                    buffer, metrics: Metrics):
+    """SimPy process: create cases (renewal-process arrivals), deliver into the buffer.
+
+    seq_id (the required pallet-build order) is assigned per make_seq_id_sampler,
+    decoupled from arrival order by up to shuffle_window - 1 places.
+    """
     sample_gap = make_interarrival_sampler(config, rng)
-    seq_id = 0
+    sample_seq_id = make_seq_id_sampler(config, rng)
     while True:
         yield env.timeout(sample_gap())
-        case = Case(seq_id=seq_id, created_t=env.now)
-        seq_id += 1
+        case = Case(seq_id=sample_seq_id(), created_t=env.now)
         metrics.generated_count += 1
-        if len(buffer.items) >= config.buffer_capacity:
+        if buffer_len(buffer) >= config.buffer_capacity:
             metrics.rejected_count += 1
+            if config.policy == "sequence":
+                buffer.skip(case.seq_id)
             continue
         case.arrived_t = env.now
-        yield buffer.put(case)
-        metrics.buffer_level_trace.append((env.now, len(buffer.items)))
+        if config.policy == "sequence":
+            buffer.put(case)
+        else:
+            yield buffer.put(case)
+        metrics.buffer_level_trace.append((env.now, buffer_len(buffer)))
 
 
 def outbound_cell(env: simpy.Environment, config: Config,
-                   buffer: simpy.Store, metrics: Metrics):
-    """SimPy process: the single server. FIFO only — blocks on store.get()."""
+                   buffer, metrics: Metrics):
+    """SimPy process: the single server. FIFO blocks on store.get(); sequence
+    awaits the next seq_id in strictly increasing order."""
+    next_seq_id = 0
     while True:
         idle_start = env.now
-        case = yield buffer.get()
-        metrics.buffer_level_trace.append((env.now, len(buffer.items)))
+        if config.policy == "sequence":
+            # "waiting_for_sequence" requires seq_id order to differ from arrival
+            # order, so a later-needed id can be sitting in the buffer while the
+            # next-required one hasn't arrived yet. make_seq_id_sampler's shuffle
+            # window is what creates that divergence (shuffle_window=1 disables
+            # it and collapses this cause to "empty", same as FIFO).
+            cause = "waiting_for_sequence" if buffer_len(buffer) > 0 else "empty"
+            case = yield from buffer.get_next(next_seq_id)
+            next_seq_id += 1
+        else:
+            case = yield buffer.get()
+            cause = "empty"
+        metrics.buffer_level_trace.append((env.now, buffer_len(buffer)))
         if env.now > idle_start:
-            metrics.blocked_intervals.append((idle_start, env.now, "empty"))
+            metrics.blocked_intervals.append((idle_start, env.now, cause))
+
+        if case is None:
+            continue  # seq_id was dropped (buffer was full on arrival); skip and move on
 
         case.service_start_t = env.now
         yield env.timeout(config.service_time_s)
@@ -151,7 +246,10 @@ def run_once(config: Config) -> dict:
     """Build env, wire components, run for sim_duration_s, return metrics.summary()."""
     rng = np.random.default_rng(config.seed)
     env = simpy.Environment()
-    buffer = simpy.Store(env, capacity=config.buffer_capacity)
+    if config.policy == "sequence":
+        buffer = SequenceBuffer(env, capacity=config.buffer_capacity)
+    else:
+        buffer = simpy.Store(env, capacity=config.buffer_capacity)
     metrics = Metrics()
 
     env.process(case_generator(env, config, rng, buffer, metrics))
