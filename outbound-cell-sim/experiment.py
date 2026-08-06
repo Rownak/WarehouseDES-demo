@@ -8,6 +8,7 @@ How to run
    python sim.py --policy sequence --cv 1.0 --seed 42
 4. python experiment.py                             # full sweep + chart (W3)
    -> prints a grouped summary table and writes results/comparison.png
+      and results/buffer_trace.png
 """
 
 import os
@@ -65,6 +66,27 @@ def plot_comparison(df: pd.DataFrame, path: str) -> None:
     plt.close(fig)
 
 
+def plot_buffer_trace(config: Config, path: str) -> None:
+    """Single-run buffer level vs. time (F7): shows congestion rising during
+    arrival bursts and draining afterward."""
+    _, metrics = run_once(config, return_metrics=True)
+    times = [t for t, _ in metrics.buffer_level_trace]
+    levels = [level for _, level in metrics.buffer_level_trace]
+
+    fig, ax = plt.subplots(figsize=(9, 4))
+    ax.step(times, levels, where="post")
+    ax.axvline(config.warmup_s, linestyle="--", color="gray", label="warm-up ends")
+    ax.set_xlabel("Simulated time (s)")
+    ax.set_ylabel("Buffer level (cases)")
+    ax.set_title(f"Buffer occupancy trace ({config.policy}, CV={config.arrival_cv})")
+    ax.legend()
+
+    fig.tight_layout()
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    fig.savefig(path)
+    plt.close(fig)
+
+
 def main() -> None:
     df = sweep()
     summary_cols = ["throughput_cases_per_hr", "utilization", "mean_wait_s", "p95_wait_s", "rejected_count"]
@@ -73,6 +95,10 @@ def main() -> None:
     chart_path = os.path.join(RESULTS_DIR, "comparison.png")
     plot_comparison(df, chart_path)
     print(f"\nSaved chart to {chart_path}")
+
+    trace_path = os.path.join(RESULTS_DIR, "buffer_trace.png")
+    plot_buffer_trace(Config(), trace_path)
+    print(f"Saved chart to {trace_path}")
 
 
 if __name__ == "__main__":

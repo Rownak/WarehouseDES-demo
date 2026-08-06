@@ -99,7 +99,7 @@ class Metrics:
 
         in_system_count = self.generated_count - len(self.completed) - self.rejected_count
 
-        return {
+        result = {
             "throughput_cases_per_hr": throughput_cases_per_hr,
             "nominal_cases_per_hr": config.cell_rate_cases_per_hr,
             "utilization": utilization,
@@ -112,6 +112,16 @@ class Metrics:
             "in_system_count": in_system_count,
             **starved_pct_by_cause,
         }
+
+        # M/D/1 analytic reference (arch §6): valid only for exponential arrivals,
+        # FIFO service, and a stable system (rho < 1) — the textbook formula
+        # assumes an unbounded queue and would misstate blocked/rejected time otherwise.
+        if config.arrival_dist == "exponential" and config.policy == "fifo" and utilization < 1:
+            rho = utilization
+            s = config.service_time_s
+            result["mdl_wait_s"] = rho * s / (2 * (1 - rho))
+
+        return result
 
 
 class SequenceBuffer:
@@ -242,8 +252,12 @@ def outbound_cell(env: simpy.Environment, config: Config,
         metrics.completed.append(case)
 
 
-def run_once(config: Config) -> dict:
-    """Build env, wire components, run for sim_duration_s, return metrics.summary()."""
+def run_once(config: Config, return_metrics: bool = False):
+    """Build env, wire components, run for sim_duration_s, return metrics.summary().
+
+    If return_metrics is True, return (summary, metrics) instead — used by the
+    buffer trace plot, which needs raw buffer_level_trace, not just the summary.
+    """
     rng = np.random.default_rng(config.seed)
     env = simpy.Environment()
     if config.policy == "sequence":
@@ -256,7 +270,8 @@ def run_once(config: Config) -> dict:
     env.process(outbound_cell(env, config, buffer, metrics))
 
     env.run(until=config.sim_duration_s)
-    return metrics.summary(config)
+    summary = metrics.summary(config)
+    return (summary, metrics) if return_metrics else summary
 
 
 def print_summary(summary: dict) -> None:
@@ -268,6 +283,12 @@ def print_summary(summary: dict) -> None:
           f"  (nominal {summary['nominal_cases_per_hr']:.0f} cases/hr)")
     print(f"Utilization:       {summary['utilization'] * 100:.1f} %")
     print(f"Mean wait:         {summary['mean_wait_s']:.2f} s")
+    if "mdl_wait_s" in summary:
+        print(f"  (M/D/1 analytic: {summary['mdl_wait_s']:.2f} s)")
+        if summary["utilization"] > 0.9 or summary["rejected_count"] > 0:
+            print("  Note: M/D/1 assumes an unbounded queue and is most accurate at"
+                  " moderate utilization; at high utilization or with rejects, expect"
+                  " the analytic and simulated waits to diverge.")
     print(f"P95 wait:          {summary['p95_wait_s']:.2f} s")
     print(f"Mean buffer level: {summary['mean_buffer_level']:.2f} cases")
     print("Starved time:")
@@ -289,6 +310,8 @@ def parse_args() -> argparse.Namespace:
                          help="service policy (default: %(default)s)")
     parser.add_argument("--cv", type=float, default=Config.arrival_cv,
                          help="arrival coefficient of variation (default: %(default)s)")
+    parser.add_argument("--dist", choices=["exponential", "lognormal"], default=Config.arrival_dist,
+                         help="inter-arrival distribution (default: %(default)s)")
     parser.add_argument("--seed", type=int, default=Config.seed,
                          help="RNG seed (default: %(default)s)")
     parser.add_argument("--duration", type=float, default=Config.sim_duration_s,
@@ -298,6 +321,7 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
-    cfg = Config(policy=args.policy, arrival_cv=args.cv, seed=args.seed, sim_duration_s=args.duration)
+    cfg = Config(policy=args.policy, arrival_cv=args.cv, arrival_dist=args.dist,
+                 seed=args.seed, sim_duration_s=args.duration)
     result = run_once(cfg)
     print_summary(result)
