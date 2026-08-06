@@ -109,13 +109,14 @@ Rules for the agent:
 
 ## Phase 5 — Nice-to-Have (F6, F7) — only if time remains
 
-- [ ] **T5.1 — M/D/1 validation printout** (F6, arch §6)
+- [x] **T5.1 — M/D/1 validation printout** (F6, arch §6)
   For exponential/FIFO runs, print analytic `Wq = ρ·s / (2(1−ρ))` next to simulated mean wait.
   **Verify:** agreement within a few percent at default settings.
+  **Note:** at the project's default config (matched arrival rate, `buffer_capacity=20`), utilization is ~97% and rejects are nonzero — M/D/1 assumes an unbounded queue and is highly sensitive to ρ near 1, so simulated and analytic waits diverge there (24.3s vs 45.6s), not agreement "within a few percent." At moderate utilization (~0.85) with a buffer large enough to avoid rejects, agreement is within ~5–13%, consistent with F6's "moderate utilization" framing. Added a CLI `--dist` flag (previously missing) so exponential arrivals are reachable from the command line, and a console caveat note that appears whenever utilization > 0.9 or rejects > 0, explaining the expected divergence instead of presenting a misleading number silently.
 
-- [ ] **T5.2 — Buffer occupancy trace plot** (F7)
+- [x] **T5.2 — Buffer occupancy trace plot** (F7)
   Single-run buffer level vs time → `results/buffer_trace.png`.
-  **Verify:** PNG exists and looks plausible (level rises during bursts, drains after).
+  **Verify:** PNG exists and looks plausible (level rises during bursts, drains after). Passed — `results/buffer_trace.png` generated from the default config (FIFO, CV=1.0); level cycles between 0 and the buffer cap (20) as arrival bursts fill the buffer and idle periods drain it, with a warm-up marker at 1800s.
 
 ---
 
